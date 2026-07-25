@@ -104,6 +104,7 @@ struct GridAggregate {
     count: usize,
     first_seen: usize,
     fuzzy: usize,
+    matches_query: bool,
 }
 
 impl HistoryFormat {
@@ -370,15 +371,26 @@ pub fn suggestion_grid(histories: &[Vec<HistoryEntry>], query: &str) -> Suggesti
         });
         aggregate.0 += 1;
     }
-    let compatible: Vec<_> = by_command
+    let all: Vec<_> = by_command
         .into_iter()
-        .filter_map(|(command, (count, first_seen))| {
-            fuzzy_score(&command, query).map(|fuzzy| GridAggregate {
+        .map(|(command, (count, first_seen))| {
+            let fuzzy = fuzzy_score(&command, query);
+            GridAggregate {
                 command,
                 count,
                 first_seen,
-                fuzzy: fuzzy.max(1),
-            })
+                fuzzy: fuzzy.unwrap_or_default(),
+                matches_query: fuzzy.is_some(),
+            }
+        })
+        .collect();
+    let compatible: Vec<_> = all
+        .iter()
+        .filter(|item| item.matches_query)
+        .cloned()
+        .map(|mut item| {
+            item.fuzzy = item.fuzzy.max(1);
+            item
         })
         .collect();
 
@@ -428,7 +440,7 @@ pub fn suggestion_grid(histories: &[Vec<HistoryEntry>], query: &str) -> Suggesti
         normalize_suggestions(fuzzy.into_iter().map(|item| (item.command, item.fuzzy)));
     let frequency_suggestions =
         normalize_suggestions(frequency.into_iter().map(|item| (item.command, item.count)));
-    let sequence_suggestions = sequence_suggestions(histories, query, &compatible);
+    let sequence_suggestions = sequence_suggestions(histories, &all);
 
     SuggestionGrid {
         lanes: [
@@ -485,8 +497,7 @@ fn prefix_word_start(command: &str, query: &str) -> Option<usize> {
 
 fn sequence_suggestions(
     histories: &[Vec<HistoryEntry>],
-    query: &str,
-    compatible: &[GridAggregate],
+    all: &[GridAggregate],
 ) -> Vec<ScoredSuggestion> {
     let Some(previous) = histories.iter().find_map(|history| {
         history
@@ -527,10 +538,16 @@ fn sequence_suggestions(
         depth: usize,
         fuzzy: usize,
         first_seen: usize,
+        matches_query: bool,
     }
-    let metadata: HashMap<_, _> = compatible
+    let metadata: HashMap<_, _> = all
         .iter()
-        .map(|item| (item.command.as_str(), (item.fuzzy, item.first_seen)))
+        .map(|item| {
+            (
+                item.command.as_str(),
+                (item.fuzzy, item.first_seen, item.matches_query),
+            )
+        })
         .collect();
     let mut best: HashMap<String, Evidence> = HashMap::new();
     for (path, occurrences) in path_counts {
@@ -539,18 +556,16 @@ fn sequence_suggestions(
         }
         let depth = path.len() - 1;
         let command = path.last().expect("path has a successor");
-        let Some(&(fuzzy, first_seen)) = metadata.get(command.as_str()) else {
+        let Some(&(fuzzy, first_seen, matches_query)) = metadata.get(command.as_str()) else {
             continue;
         };
-        if fuzzy_score(command, query).is_none() {
-            continue;
-        }
         let evidence = Evidence {
             command: command.clone(),
             raw: occurrences * 100 + depth,
             depth,
             fuzzy,
             first_seen,
+            matches_query,
         };
         let replace = best.get(command).is_none_or(|current| {
             evidence.raw > current.raw
@@ -563,13 +578,74 @@ fn sequence_suggestions(
     let mut ranked: Vec<_> = best.into_values().collect();
     ranked.sort_by(|left, right| {
         right
-            .raw
-            .cmp(&left.raw)
+            .matches_query
+            .cmp(&left.matches_query)
+            .then_with(|| right.raw.cmp(&left.raw))
             .then_with(|| left.depth.cmp(&right.depth))
             .then_with(|| right.fuzzy.cmp(&left.fuzzy))
             .then_with(|| left.first_seen.cmp(&right.first_seen))
             .then_with(|| left.command.cmp(&right.command))
     });
+    if ranked.is_empty() {
+        let mut global_paths: HashMap<Vec<String>, usize> = HashMap::new();
+        for history in histories {
+            let commands: Vec<_> = history.iter().map(|entry| entry.command.trim()).collect();
+            for start in 0..commands.len() {
+                for depth in 1..=3 {
+                    let end = start + depth;
+                    if end >= commands.len()
+                        || commands[start..=end]
+                            .iter()
+                            .any(|command| command.is_empty())
+                    {
+                        break;
+                    }
+                    let path = commands[start..=end]
+                        .iter()
+                        .map(|command| (*command).to_owned())
+                        .collect();
+                    *global_paths.entry(path).or_default() += 1;
+                }
+            }
+        }
+        let mut fallback = HashMap::new();
+        for (path, occurrences) in global_paths {
+            if occurrences < 2 {
+                continue;
+            }
+            let depth = path.len() - 1;
+            let command = path.last().expect("path has a successor");
+            let Some(&(fuzzy, first_seen, matches_query)) = metadata.get(command.as_str()) else {
+                continue;
+            };
+            let evidence = Evidence {
+                command: command.clone(),
+                raw: occurrences * 100 + depth,
+                depth,
+                fuzzy,
+                first_seen,
+                matches_query,
+            };
+            let replace = fallback.get(command).is_none_or(|current: &Evidence| {
+                evidence.raw > current.raw
+                    || (evidence.raw == current.raw && evidence.depth < current.depth)
+            });
+            if replace {
+                fallback.insert(command.clone(), evidence);
+            }
+        }
+        ranked = fallback.into_values().collect();
+        ranked.sort_by(|left, right| {
+            right
+                .matches_query
+                .cmp(&left.matches_query)
+                .then_with(|| right.raw.cmp(&left.raw))
+                .then_with(|| left.depth.cmp(&right.depth))
+                .then_with(|| right.fuzzy.cmp(&left.fuzzy))
+                .then_with(|| left.first_seen.cmp(&right.first_seen))
+                .then_with(|| left.command.cmp(&right.command))
+        });
+    }
     normalize_suggestions(
         ranked
             .into_iter()

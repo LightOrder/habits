@@ -254,6 +254,39 @@ fn repeated_prior_paths_offer_each_depth_but_single_paths_do_not() {
 }
 
 #[test]
+fn sequence_backs_off_to_global_repeated_transitions_when_latest_context_has_no_path() {
+    let histories = vec![vec![
+        entry("alpha"),
+        entry("beta"),
+        entry("alpha"),
+        entry("beta"),
+        entry("latest"),
+    ]];
+    let grid = suggestion_grid(&histories, "");
+    let sequence: Vec<_> = grid.lanes[3]
+        .suggestions
+        .iter()
+        .map(|item| item.command.as_str())
+        .collect();
+
+    assert!(sequence.contains(&"beta"));
+}
+
+#[test]
+fn sequence_keeps_contextual_predictions_when_query_has_no_path_match() {
+    let histories = vec![vec![
+        entry("alpha"),
+        entry("beta"),
+        entry("alpha"),
+        entry("beta"),
+        entry("latest"),
+    ]];
+    let grid = suggestion_grid(&histories, "git");
+
+    assert_eq!(grid.lanes[3].suggestions[0].command, "beta");
+}
+
+#[test]
 fn sequence_paths_never_cross_history_vector_boundaries() {
     let histories = vec![
         vec![entry("previous"), entry("cross"), entry("previous")],
@@ -261,7 +294,12 @@ fn sequence_paths_never_cross_history_vector_boundaries() {
     ];
     let grid = suggestion_grid(&histories, "cross");
 
-    assert!(grid.lanes[3].suggestions.is_empty());
+    assert!(
+        !grid.lanes[3]
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.command == "cross")
+    );
 }
 
 #[test]
