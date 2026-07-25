@@ -1,6 +1,6 @@
 use habits::{
-    batches, command_frequencies, load_history_file, parse_history, repeated_sequences, HistoryFormat,
-    HistorySource,
+    HistoryFormat, HistorySource, batches, command_frequencies, load_history_file, parse_history,
+    repeated_sequences,
 };
 
 #[test]
@@ -41,7 +41,10 @@ fn zsh_plain_mode_preserves_extended_history_lookalikes_verbatim() {
     )
     .expect("plain zsh history should parse");
 
-    assert_eq!(entries[0].command, ": 1710000000:not-a-duration;do not reinterpret me");
+    assert_eq!(
+        entries[0].command,
+        ": 1710000000:not-a-duration;do not reinterpret me"
+    );
     assert_eq!(entries[0].timestamp, None);
 }
 
@@ -72,11 +75,8 @@ fn bash_plain_mode_never_discards_numeric_comment_commands() {
 
 #[test]
 fn powershell_lines_have_no_implied_timestamps() {
-    let entries = parse_history(
-        HistoryFormat::PowerShell,
-        "Get-ChildItem\ngit status\n",
-    )
-    .expect("PowerShell history should parse");
+    let entries = parse_history(HistoryFormat::PowerShell, "Get-ChildItem\ngit status\n")
+        .expect("PowerShell history should parse");
 
     assert!(entries.iter().all(|entry| entry.timestamp.is_none()));
     assert_eq!(entries[0].command, "Get-ChildItem");
@@ -94,7 +94,11 @@ fn frequency_counts_trimmed_exact_commands_without_rewriting_command_syntax() {
 
     assert_eq!(frequencies[0].command, "git status");
     assert_eq!(frequencies[0].count, 2);
-    assert!(frequencies.iter().any(|item| item.command == "git   status" && item.count == 1));
+    assert!(
+        frequencies
+            .iter()
+            .any(|item| item.command == "git   status" && item.count == 1)
+    );
 }
 
 #[test]
@@ -136,7 +140,10 @@ fn repeated_sequences_favor_longer_contiguous_patterns_over_single_command_frequ
 
     let patterns = repeated_sequences(&batches, 2, 3, 2);
 
-    assert_eq!(patterns[0].commands, vec!["git status", "cargo test", "git diff"]);
+    assert_eq!(
+        patterns[0].commands,
+        vec!["git status", "cargo test", "git diff"]
+    );
     assert_eq!(patterns[0].occurrences, 2);
     assert!(patterns[0].rank > patterns[1].rank);
 }

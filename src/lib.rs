@@ -54,7 +54,10 @@ pub struct Batch {
 
 impl Batch {
     pub fn commands(&self) -> Vec<&str> {
-        self.entries.iter().map(|entry| entry.command.as_str()).collect()
+        self.entries
+            .iter()
+            .map(|entry| entry.command.as_str())
+            .collect()
     }
 }
 
@@ -78,10 +81,7 @@ pub struct SequencePattern {
 ///
 /// `BashTimestamped` and `ZshExtended` preserve multiline records between timestamp markers.
 /// Select a plain format when the source has no guaranteed timestamp-record convention.
-pub fn parse_history(
-    format: HistoryFormat,
-    input: &str,
-) -> Result<Vec<HistoryEntry>, String> {
+pub fn parse_history(format: HistoryFormat, input: &str) -> Result<Vec<HistoryEntry>, String> {
     match format {
         HistoryFormat::BashPlain => Ok(parse_plain(input, HistorySource::Bash)),
         HistoryFormat::BashTimestamped => parse_bash_timestamped(input),
@@ -272,7 +272,11 @@ fn parse_bash_timestamp_marker(line: &str) -> Result<Option<i64>, String> {
     let Some(raw_timestamp) = line.strip_prefix('#') else {
         return Ok(None);
     };
-    if raw_timestamp.is_empty() || !raw_timestamp.chars().all(|character| character.is_ascii_digit()) {
+    if raw_timestamp.is_empty()
+        || !raw_timestamp
+            .chars()
+            .all(|character| character.is_ascii_digit())
+    {
         return Ok(None);
     }
     raw_timestamp
@@ -293,8 +297,12 @@ fn parse_zsh_extended_marker(line: &str) -> Result<Option<(i64, &str)>, String> 
     };
     if raw_timestamp.is_empty()
         || raw_duration.is_empty()
-        || !raw_timestamp.chars().all(|character| character.is_ascii_digit())
-        || !raw_duration.chars().all(|character| character.is_ascii_digit())
+        || !raw_timestamp
+            .chars()
+            .all(|character| character.is_ascii_digit())
+        || !raw_duration
+            .chars()
+            .all(|character| character.is_ascii_digit())
     {
         return Ok(None);
     }

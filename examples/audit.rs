@@ -1,16 +1,20 @@
 use std::env;
 use std::process::ExitCode;
 
-use habits::{batches, command_frequencies, load_history_file, repeated_sequences, HistoryFormat};
+use habits::{HistoryFormat, batches, command_frequencies, load_history_file, repeated_sequences};
 
 fn main() -> ExitCode {
     let mut arguments = env::args().skip(1);
     let Some(format) = arguments.next().and_then(parse_format) else {
-        eprintln!("usage: cargo run --example audit -- <bash-plain|bash-timestamped|zsh-plain|zsh-extended|powershell> <history-file>");
+        eprintln!(
+            "usage: cargo run --example audit -- <bash-plain|bash-timestamped|zsh-plain|zsh-extended|powershell> <history-file>"
+        );
         return ExitCode::from(2);
     };
     let Some(path) = arguments.next() else {
-        eprintln!("usage: cargo run --example audit -- <bash-plain|bash-timestamped|zsh-plain|zsh-extended|powershell> <history-file>");
+        eprintln!(
+            "usage: cargo run --example audit -- <bash-plain|bash-timestamped|zsh-plain|zsh-extended|powershell> <history-file>"
+        );
         return ExitCode::from(2);
     };
 
@@ -21,7 +25,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let timestamped = entries.iter().filter(|entry| entry.timestamp.is_some()).count();
+    let timestamped = entries
+        .iter()
+        .filter(|entry| entry.timestamp.is_some())
+        .count();
     let batches = batches(&entries, 300);
     let patterns = repeated_sequences(&batches, 2, 6, 2);
 

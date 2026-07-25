@@ -2,9 +2,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use habits::{
-    HistoryFormat, batches, command_frequencies, load_history_file, repeated_sequences,
-};
+use habits::{HistoryFormat, batches, command_frequencies, load_history_file, repeated_sequences};
 
 const USAGE: &str = "\
 Usage:
@@ -337,7 +335,8 @@ fn json_string(value: &str) -> String {
             '\t' => output.push_str("\\t"),
             character if character <= '\u{1f}' => {
                 use std::fmt::Write;
-                write!(output, "\\u{:04x}", character as u32).expect("writing to String cannot fail");
+                write!(output, "\\u{:04x}", character as u32)
+                    .expect("writing to String cannot fail");
             }
             character => output.push(character),
         }

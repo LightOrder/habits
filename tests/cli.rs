@@ -13,10 +13,8 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let serial = NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "habits-cli-test-{}-{serial}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("habits-cli-test-{}-{serial}", std::process::id()));
         std::fs::create_dir_all(&root).expect("temporary fixture directory should be created");
         Self { root }
     }
@@ -50,10 +48,8 @@ impl Drop for Fixture {
 fn inspect_fixture(fixture: &Fixture) -> PathBuf {
     fixture.write(
         "history",
-        format!(
-            ": 100:0;{SENTINEL}\n: 110:0;cargo test\n: 500:0;{SENTINEL}\n: 510:0;cargo test\n"
-        )
-        .as_bytes(),
+        format!(": 100:0;{SENTINEL}\n: 110:0;cargo test\n: 500:0;{SENTINEL}\n: 510:0;cargo test\n")
+            .as_bytes(),
     )
 }
 
@@ -161,8 +157,7 @@ fn json_show_commands_emits_only_opted_in_command_fields_and_valid_escapes() {
     let escaped = "printf 'quote=\" slash=\\\\ tab=\t'";
     let path = fixture.write(
         "history",
-        format!(": 100:0;{escaped}\n: 110:0;next\n: 120:0;{escaped}\n: 130:0;next\n")
-            .as_bytes(),
+        format!(": 100:0;{escaped}\n: 110:0;next\n: 120:0;{escaped}\n: 130:0;next\n").as_bytes(),
     );
     let output = run(fixture.command().args([
         "inspect",
@@ -186,9 +181,11 @@ fn json_show_commands_emits_only_opted_in_command_fields_and_valid_escapes() {
             .is_some_and(|command| command.string() == escaped)
     }));
     let sequences = object["repeated_sequences"].array();
-    assert!(sequences
-        .iter()
-        .any(|row| row.object().contains_key("commands")));
+    assert!(
+        sequences
+            .iter()
+            .any(|row| row.object().contains_key("commands"))
+    );
 }
 
 #[test]
@@ -529,10 +526,7 @@ impl<'a> JsonParser<'a> {
                     b't' => value.push('\t'),
                     b'u' => {
                         for _ in 0..4 {
-                            if !self
-                                .next()
-                                .is_some_and(|digit| digit.is_ascii_hexdigit())
-                            {
+                            if !self.next().is_some_and(|digit| digit.is_ascii_hexdigit()) {
                                 return Err("invalid JSON unicode escape".into());
                             }
                         }
