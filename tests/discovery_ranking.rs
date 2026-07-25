@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use habits::{
-    CandidateKind, HistoryFormat, HistorySource, conventional_history_paths, discover_histories,
-    parse_history, rank_candidates,
+    CandidateKind, HistoryFormat, HistorySource, ModelKind, conventional_history_paths,
+    discover_histories, parse_history, rank_candidates, suggestion_grid,
 };
 
 fn fixture_root(label: &str) -> PathBuf {
@@ -162,6 +162,202 @@ fn ranking_exposes_predecessor_and_successor_evidence_without_crossing_sources()
     assert_eq!(cargo.predecessors[1].command, "npm test");
     assert_eq!(cargo.successors[0].command, "git push");
     assert_eq!(cargo.successors[0].count, 2);
+}
+
+#[test]
+fn suggestion_grid_has_four_stable_model_lanes_and_preserves_typed_input() {
+    let grid = suggestion_grid(&[vec![entry("git status")]], "git");
+
+    assert_eq!(grid.typed_input, "git");
+    assert_eq!(grid.lanes.len(), 4);
+    assert_eq!(
+        grid.lanes.map(|lane| lane.model),
+        [
+            ModelKind::Prefix,
+            ModelKind::Fuzzy,
+            ModelKind::Frequency,
+            ModelKind::Sequence,
+        ]
+    );
+}
+
+#[test]
+fn suggestion_lanes_cap_at_five_and_use_bounded_model_local_scores() {
+    let histories = vec![vec![
+        entry("git alpha"),
+        entry("git bravo"),
+        entry("git charlie"),
+        entry("git delta"),
+        entry("git echo"),
+        entry("git foxtrot"),
+    ]];
+    let grid = suggestion_grid(&histories, "git");
+
+    for lane in &grid.lanes[..3] {
+        assert_eq!(lane.suggestions.len(), 5);
+        assert!(lane.suggestions.iter().all(|item| item.score <= 100));
+        assert_eq!(lane.suggestions[0].score, 100);
+    }
+    assert!(grid.lanes[3].suggestions.is_empty());
+}
+
+#[test]
+fn prefix_and_fuzzy_lanes_have_distinct_deterministic_ordering() {
+    let late_prefix = format!("{} gts", "x".repeat(500));
+    let histories = vec![vec![entry(&late_prefix), entry("git status")]];
+    let grid = suggestion_grid(&histories, "gts");
+
+    assert_eq!(grid.lanes[0].suggestions[0].command, late_prefix);
+    assert_eq!(grid.lanes[1].suggestions[0].command, "git status");
+}
+
+#[test]
+fn frequency_lane_favors_most_frequent_query_compatible_command() {
+    let histories = vec![vec![
+        entry("git status"),
+        entry("git stash"),
+        entry("git stash"),
+        entry("git stash"),
+    ]];
+    let grid = suggestion_grid(&histories, "gis");
+
+    assert_eq!(grid.lanes[2].suggestions[0].command, "git stash");
+    assert_eq!(grid.lanes[2].suggestions[0].score, 100);
+}
+
+#[test]
+fn repeated_prior_paths_offer_each_depth_but_single_paths_do_not() {
+    let histories = vec![vec![
+        entry("previous"),
+        entry("one"),
+        entry("two"),
+        entry("three"),
+        entry("previous"),
+        entry("one"),
+        entry("two"),
+        entry("three"),
+        entry("previous"),
+        entry("single"),
+        entry("previous"),
+    ]];
+    let grid = suggestion_grid(&histories, "");
+    let sequence: Vec<_> = grid.lanes[3]
+        .suggestions
+        .iter()
+        .map(|item| item.command.as_str())
+        .collect();
+
+    assert!(sequence.contains(&"one"));
+    assert!(sequence.contains(&"two"));
+    assert!(sequence.contains(&"three"));
+    assert!(!sequence.contains(&"single"));
+}
+
+#[test]
+fn sequence_paths_never_cross_history_vector_boundaries() {
+    let histories = vec![
+        vec![entry("previous"), entry("cross"), entry("previous")],
+        vec![entry("cross"), entry("previous")],
+    ];
+    let grid = suggestion_grid(&histories, "cross");
+
+    assert!(grid.lanes[3].suggestions.is_empty());
+}
+
+#[test]
+fn lane_ties_are_stable_and_commands_are_deduplicated() {
+    let histories = vec![vec![
+        entry("alpha"),
+        entry("beta"),
+        entry("alpha"),
+        entry("beta"),
+        entry("prior"),
+    ]];
+    let grid = suggestion_grid(&histories, "");
+
+    assert_eq!(grid.lanes[2].suggestions[0].command, "alpha");
+    for lane in &grid.lanes {
+        let commands: Vec<_> = lane
+            .suggestions
+            .iter()
+            .map(|item| item.command.as_str())
+            .collect();
+        let unique: std::collections::HashSet<_> = commands.iter().copied().collect();
+        assert_eq!(commands.len(), unique.len());
+    }
+}
+
+#[test]
+fn prefix_ties_use_word_start_then_frequency_then_first_observation() {
+    let histories = vec![vec![
+        entry("git first"),
+        entry("git popular"),
+        entry("run git frequent"),
+        entry("git second"),
+        entry("git popular"),
+        entry("run git frequent"),
+        entry("run git frequent"),
+    ]];
+    let grid = suggestion_grid(&histories, "git");
+    let prefix: Vec<_> = grid.lanes[0]
+        .suggestions
+        .iter()
+        .map(|item| item.command.as_str())
+        .collect();
+
+    assert_eq!(
+        prefix,
+        vec!["git popular", "git first", "git second", "run git frequent"]
+    );
+}
+
+#[test]
+fn fuzzy_ties_use_frequency_then_first_observation_and_deduplicate() {
+    let histories = vec![vec![
+        entry("git status"),
+        entry("git stash"),
+        entry("git staged"),
+        entry("git stash"),
+    ]];
+    let grid = suggestion_grid(&histories, "gis");
+    let fuzzy: Vec<_> = grid.lanes[1]
+        .suggestions
+        .iter()
+        .map(|item| item.command.as_str())
+        .collect();
+
+    assert_eq!(fuzzy, vec!["git stash", "git status", "git staged"]);
+}
+
+#[test]
+fn sequence_ties_use_first_observation_and_deduplicate_repeated_paths() {
+    let histories = vec![vec![
+        entry("prior"),
+        entry("alpha"),
+        entry("unique one"),
+        entry("unique two"),
+        entry("prior"),
+        entry("beta"),
+        entry("unique three"),
+        entry("unique four"),
+        entry("prior"),
+        entry("alpha"),
+        entry("unique five"),
+        entry("unique six"),
+        entry("prior"),
+        entry("beta"),
+        entry("unique seven"),
+        entry("unique eight"),
+        entry("prior"),
+    ]];
+    let grid = suggestion_grid(&histories, "");
+    let sequence: Vec<_> = grid.lanes[3]
+        .suggestions
+        .iter()
+        .map(|item| item.command.as_str())
+        .collect();
+
+    assert_eq!(sequence, vec!["alpha", "beta"]);
 }
 
 #[test]

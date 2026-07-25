@@ -72,6 +72,40 @@ pub struct RankedCandidate {
     pub successors: Vec<ContextEvidence>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelKind {
+    Prefix,
+    Fuzzy,
+    Frequency,
+    Sequence,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScoredSuggestion {
+    pub command: String,
+    pub score: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModelLane {
+    pub model: ModelKind,
+    pub suggestions: Vec<ScoredSuggestion>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuggestionGrid {
+    pub lanes: [ModelLane; 4],
+    pub typed_input: String,
+}
+
+#[derive(Clone)]
+struct GridAggregate {
+    command: String,
+    count: usize,
+    first_seen: usize,
+    fuzzy: usize,
+}
+
 impl HistoryFormat {
     pub fn source(self) -> HistorySource {
         match self {
@@ -318,6 +352,229 @@ pub fn rank_candidates(histories: &[Vec<HistoryEntry>], query: &str) -> Vec<Rank
             .map(|(candidate, _, _)| candidate),
     );
     ranked
+}
+
+/// Produces four stable, model-local suggestion lanes from explicit history vectors.
+pub fn suggestion_grid(histories: &[Vec<HistoryEntry>], query: &str) -> SuggestionGrid {
+    let mut by_command: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut next_observation = 0;
+    for entry in histories.iter().flatten() {
+        let command = entry.command.trim();
+        if command.is_empty() {
+            continue;
+        }
+        let aggregate = by_command.entry(command.to_owned()).or_insert_with(|| {
+            let first_seen = next_observation;
+            next_observation += 1;
+            (0, first_seen)
+        });
+        aggregate.0 += 1;
+    }
+    let compatible: Vec<_> = by_command
+        .into_iter()
+        .filter_map(|(command, (count, first_seen))| {
+            fuzzy_score(&command, query).map(|fuzzy| GridAggregate {
+                command,
+                count,
+                first_seen,
+                fuzzy: fuzzy.max(1),
+            })
+        })
+        .collect();
+
+    let mut prefix: Vec<_> = compatible
+        .iter()
+        .filter_map(|item| {
+            prefix_word_start(&item.command, query).map(|position| {
+                (
+                    item.clone(),
+                    1_000_000usize.saturating_sub(position).max(1),
+                    position,
+                )
+            })
+        })
+        .collect();
+    prefix.sort_by(|(left, _, left_start), (right, _, right_start)| {
+        left_start
+            .cmp(right_start)
+            .then_with(|| right.count.cmp(&left.count))
+            .then_with(|| left.first_seen.cmp(&right.first_seen))
+            .then_with(|| left.command.cmp(&right.command))
+    });
+
+    let mut fuzzy = compatible.clone();
+    fuzzy.sort_by(|left, right| {
+        right
+            .fuzzy
+            .cmp(&left.fuzzy)
+            .then_with(|| right.count.cmp(&left.count))
+            .then_with(|| left.first_seen.cmp(&right.first_seen))
+            .then_with(|| left.command.cmp(&right.command))
+    });
+
+    let mut frequency = compatible.clone();
+    frequency.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| right.fuzzy.cmp(&left.fuzzy))
+            .then_with(|| left.first_seen.cmp(&right.first_seen))
+            .then_with(|| left.command.cmp(&right.command))
+    });
+
+    let prefix_suggestions =
+        normalize_suggestions(prefix.into_iter().map(|(item, raw, _)| (item.command, raw)));
+    let fuzzy_suggestions =
+        normalize_suggestions(fuzzy.into_iter().map(|item| (item.command, item.fuzzy)));
+    let frequency_suggestions =
+        normalize_suggestions(frequency.into_iter().map(|item| (item.command, item.count)));
+    let sequence_suggestions = sequence_suggestions(histories, query, &compatible);
+
+    SuggestionGrid {
+        lanes: [
+            ModelLane {
+                model: ModelKind::Prefix,
+                suggestions: prefix_suggestions,
+            },
+            ModelLane {
+                model: ModelKind::Fuzzy,
+                suggestions: fuzzy_suggestions,
+            },
+            ModelLane {
+                model: ModelKind::Frequency,
+                suggestions: frequency_suggestions,
+            },
+            ModelLane {
+                model: ModelKind::Sequence,
+                suggestions: sequence_suggestions,
+            },
+        ],
+        typed_input: query.to_owned(),
+    }
+}
+
+fn normalize_suggestions(
+    ranked: impl IntoIterator<Item = (String, usize)>,
+) -> Vec<ScoredSuggestion> {
+    let ranked: Vec<_> = ranked.into_iter().take(5).collect();
+    let maximum = ranked.first().map_or(1, |(_, raw)| (*raw).max(1));
+    ranked
+        .into_iter()
+        .map(|(command, raw)| ScoredSuggestion {
+            command,
+            score: ((raw as u128 * 100) / maximum as u128) as u8,
+        })
+        .collect()
+}
+
+fn prefix_word_start(command: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let command = command.to_lowercase();
+    let query = query.to_lowercase();
+    command.match_indices(&query).find_map(|(position, _)| {
+        (position == 0
+            || command[..position]
+                .chars()
+                .next_back()
+                .is_some_and(|character| !character.is_alphanumeric()))
+        .then_some(position)
+    })
+}
+
+fn sequence_suggestions(
+    histories: &[Vec<HistoryEntry>],
+    query: &str,
+    compatible: &[GridAggregate],
+) -> Vec<ScoredSuggestion> {
+    let Some(previous) = histories.iter().find_map(|history| {
+        history
+            .iter()
+            .rev()
+            .map(|entry| entry.command.trim())
+            .find(|command| !command.is_empty())
+    }) else {
+        return Vec::new();
+    };
+
+    let mut path_counts: HashMap<Vec<String>, usize> = HashMap::new();
+    for history in histories {
+        let commands: Vec<_> = history.iter().map(|entry| entry.command.trim()).collect();
+        for start in 0..commands.len() {
+            if commands[start] != previous {
+                continue;
+            }
+            for depth in 1..=3 {
+                let end = start + depth;
+                if end >= commands.len() || commands[start..=end].iter().any(|item| item.is_empty())
+                {
+                    break;
+                }
+                let path = commands[start..=end]
+                    .iter()
+                    .map(|item| (*item).to_owned())
+                    .collect();
+                *path_counts.entry(path).or_default() += 1;
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct Evidence {
+        command: String,
+        raw: usize,
+        depth: usize,
+        fuzzy: usize,
+        first_seen: usize,
+    }
+    let metadata: HashMap<_, _> = compatible
+        .iter()
+        .map(|item| (item.command.as_str(), (item.fuzzy, item.first_seen)))
+        .collect();
+    let mut best: HashMap<String, Evidence> = HashMap::new();
+    for (path, occurrences) in path_counts {
+        if occurrences < 2 {
+            continue;
+        }
+        let depth = path.len() - 1;
+        let command = path.last().expect("path has a successor");
+        let Some(&(fuzzy, first_seen)) = metadata.get(command.as_str()) else {
+            continue;
+        };
+        if fuzzy_score(command, query).is_none() {
+            continue;
+        }
+        let evidence = Evidence {
+            command: command.clone(),
+            raw: occurrences * 100 + depth,
+            depth,
+            fuzzy,
+            first_seen,
+        };
+        let replace = best.get(command).is_none_or(|current| {
+            evidence.raw > current.raw
+                || (evidence.raw == current.raw && evidence.depth < current.depth)
+        });
+        if replace {
+            best.insert(command.clone(), evidence);
+        }
+    }
+    let mut ranked: Vec<_> = best.into_values().collect();
+    ranked.sort_by(|left, right| {
+        right
+            .raw
+            .cmp(&left.raw)
+            .then_with(|| left.depth.cmp(&right.depth))
+            .then_with(|| right.fuzzy.cmp(&left.fuzzy))
+            .then_with(|| left.first_seen.cmp(&right.first_seen))
+            .then_with(|| left.command.cmp(&right.command))
+    });
+    normalize_suggestions(
+        ranked
+            .into_iter()
+            .map(|evidence| (evidence.command, evidence.raw)),
+    )
 }
 
 /// Counts trimmed exact commands, ordered by descending count then lexical command text.
