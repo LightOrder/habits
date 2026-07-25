@@ -1,7 +1,8 @@
 //! Local, deterministic utilities for extracting useful patterns from shell history.
 //!
-//! This crate deliberately stops before shell integration, persistence, macro execution,
-//! or interactive search. It makes history data trustworthy and inspectable first.
+//! It provides local history discovery, deterministic ranking, and an optional interactive
+//! selector. It deliberately excludes persistence, automatic shell configuration, and macro
+//! execution.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -167,6 +168,16 @@ pub fn conventional_history_paths(home: &Path) -> Result<Vec<HistoryPath>, Strin
         HistoryPath {
             source: HistorySource::PowerShell,
             path: home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
+        },
+        HistoryPath {
+            source: HistorySource::PowerShell,
+            path: home.join(
+                "AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt",
+            ),
+        },
+        HistoryPath {
+            source: HistorySource::PowerShell,
+            path: home.join("AppData/Roaming/PowerShell/PSReadLine/ConsoleHost_history.txt"),
         },
     ])
 }
@@ -428,13 +439,16 @@ fn auto_format(source: HistorySource, input: &str) -> (HistoryFormat, &'static s
 }
 
 fn well_formed_zsh_extended(input: &str) -> bool {
-    let lines: Vec<_> = input.lines().filter(|line| !line.is_empty()).collect();
-    if lines.is_empty() || parse_zsh_extended_marker(lines[0]).ok().flatten().is_none() {
+    let mut lines = input.lines().filter(|line| !line.is_empty());
+    let Some(first) = lines.next() else {
+        return false;
+    };
+    if parse_zsh_extended_marker(first).ok().flatten().is_none() {
         return false;
     }
-    lines.iter().all(|line| {
-        !line.starts_with(": ") || parse_zsh_extended_marker(line).ok().flatten().is_some()
-    })
+    // After an initial record marker, any non-marker line is command continuation text.
+    // This deliberately mirrors `parse_zsh_extended`, including `: ` command lines.
+    true
 }
 
 fn well_formed_bash_timestamped(input: &str) -> bool {
@@ -454,7 +468,12 @@ fn well_formed_bash_timestamped(input: &str) -> bool {
         }
         index += 1;
         let command_start = index;
-        while index < lines.len() && !lines[index].starts_with('#') {
+        while index < lines.len()
+            && parse_bash_timestamp_marker(lines[index])
+                .ok()
+                .flatten()
+                .is_none()
+        {
             index += 1;
         }
         if command_start == index {

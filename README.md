@@ -28,8 +28,9 @@ habits select --query "git st"
 ```
 
 The list narrows as you type. Up and Down move the highlight without changing
-the typed command. Enter confirms the highlighted history or typed-input row;
-Escape cancels.
+the typed command. Each history row shows observed frequency and, when known,
+its most common adjacent commands. Enter executes the highlighted history or
+typed-input row; Escape returns to the untouched shell buffer.
 
 Enable the optional Zsh Ctrl-R widget by explicitly adding this sourceable
 output to your shell setup:

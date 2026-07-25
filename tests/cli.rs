@@ -199,12 +199,24 @@ fn paths_json_reports_only_known_candidates_without_reading_them() {
     let report = stdout(&output);
     let parsed = JsonParser::parse(&report).expect("paths output should be valid JSON");
     let candidates = parsed.object()["candidates"].array();
-    assert_eq!(candidates.len(), 3);
+    assert_eq!(candidates.len(), 5);
     let expected = [
         (fixture.path(".zsh_history"), true, "zsh-plain"),
         (fixture.path(".bash_history"), true, "bash-plain"),
         (
             fixture.path(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
+            false,
+            "powershell",
+        ),
+        (
+            fixture.path(
+                "AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt",
+            ),
+            false,
+            "powershell",
+        ),
+        (
+            fixture.path("AppData/Roaming/PowerShell/PSReadLine/ConsoleHost_history.txt"),
             false,
             "powershell",
         ),

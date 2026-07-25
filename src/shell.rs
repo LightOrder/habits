@@ -5,11 +5,15 @@ habits-history-widget() {
   selected="$(habits select --query "$BUFFER")"
   select_status=$?
 
-  if (( select_status == 0 )) && [[ "$selected" != "$original_buffer" ]]; then
-    BUFFER="$selected"
-    CURSOR=${#BUFFER}
+  if (( select_status == 0 )); then
+    if [[ "$selected" != "$original_buffer" ]]; then
+      BUFFER="$selected"
+      CURSOR=${#BUFFER}
+    fi
+    zle accept-line
+  else
+    zle redisplay
   fi
-  zle redisplay
 }
 zle -N habits-history-widget
 bindkey '^R' habits-history-widget
@@ -33,7 +37,7 @@ mod tests {
         assert!(!script.contains("eval "));
         assert!(!script.contains("source "));
         assert!(!script.contains(".zshrc"));
-        assert!(!script.contains("accept-line"));
+        assert!(script.contains("zle accept-line"));
     }
 
     #[test]

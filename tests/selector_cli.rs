@@ -24,6 +24,7 @@ fn shell_init_zsh_emits_sourceable_widget_without_writing_configuration() {
     assert!(script.contains(r#"habits select --query "$BUFFER""#));
     assert!(script.contains("select_status == 0"));
     assert!(script.contains(r#"BUFFER="$selected""#));
+    assert!(script.contains("zle accept-line"));
     assert!(!script.contains("eval "));
     assert_eq!(std::fs::read_to_string(&zshrc).unwrap(), "# unchanged\n");
     std::fs::remove_dir_all(fixture).unwrap();

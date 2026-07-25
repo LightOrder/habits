@@ -32,19 +32,31 @@ fn conventional_discovery_is_stably_ordered_and_reports_missing_files() {
     let paths = conventional_history_paths(&root).unwrap();
     let discovered = discover_histories(&paths);
 
-    assert_eq!(discovered.len(), 3);
+    assert_eq!(discovered.len(), 5);
     assert_eq!(discovered[0].source, HistorySource::Zsh);
     assert_eq!(discovered[1].source, HistorySource::Bash);
     assert_eq!(discovered[2].source, HistorySource::PowerShell);
+    assert_eq!(discovered[3].source, HistorySource::PowerShell);
+    assert_eq!(discovered[4].source, HistorySource::PowerShell);
     assert!(!discovered[0].exists);
     assert_eq!(discovered[1].format, HistoryFormat::BashPlain);
     assert_eq!(discovered[1].entry_count, 1);
     assert!(!discovered[2].exists);
+    assert!(!discovered[3].exists);
+    assert!(!discovered[4].exists);
+    assert!(discovered[3].path.ends_with(
+        "AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt"
+    ));
+    assert!(
+        discovered[4]
+            .path
+            .ends_with("AppData/Roaming/PowerShell/PSReadLine/ConsoleHost_history.txt")
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn auto_format_uses_only_consistently_well_formed_timestamp_records() {
+fn auto_format_uses_timestamped_records_without_misreading_command_text() {
     let root = fixture_root("format");
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
@@ -63,8 +75,33 @@ fn auto_format_uses_only_consistently_well_formed_timestamp_records() {
 
     assert_eq!(discovered[0].format, HistoryFormat::ZshExtended);
     assert_eq!(discovered[0].entry_count, 2);
-    assert_eq!(discovered[1].format, HistoryFormat::BashPlain);
-    assert_eq!(discovered[1].entry_count, 4);
+    assert_eq!(discovered[1].format, HistoryFormat::BashTimestamped);
+    assert_eq!(discovered[1].entry_count, 1);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn auto_format_keeps_marker_like_command_lines_inside_timestamped_records() {
+    let root = fixture_root("marker-like-commands");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join(".zsh_history"),
+        ": 100:0;printf first\n: echo continuation\n: 110:0;cargo test\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".bash_history"),
+        "#100\nprintf first\n# comment\n#110\ncargo test\n",
+    )
+    .unwrap();
+
+    let discovered = discover_histories(&conventional_history_paths(&root).unwrap());
+
+    assert_eq!(discovered[0].format, HistoryFormat::ZshExtended);
+    assert_eq!(discovered[0].entry_count, 2);
+    assert_eq!(discovered[1].format, HistoryFormat::BashTimestamped);
+    assert_eq!(discovered[1].entry_count, 2);
     std::fs::remove_dir_all(root).unwrap();
 }
 

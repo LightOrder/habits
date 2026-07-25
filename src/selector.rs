@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::{Attribute, Print, SetAttribute};
 use crossterm::terminal::{
     self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -54,6 +54,9 @@ impl SelectorState {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, histories: &[Vec<HistoryEntry>]) -> SelectorAction {
+        if key.kind == KeyEventKind::Release {
+            return SelectorAction::Continue;
+        }
         match key.code {
             KeyCode::Esc => SelectorAction::Cancel,
             KeyCode::Enter => self
@@ -201,15 +204,10 @@ fn render(state: &SelectorState) -> Result<(), String> {
             queue!(stderr, SetAttribute(Attribute::Reverse))
                 .map_err(|error| format!("could not render selector: {error}"))?;
         }
-        let marker = if candidate.kind == CandidateKind::TypedInput {
-            "typed"
-        } else {
-            "     "
-        };
-        let command = truncate_for_terminal(&candidate.command, columns.saturating_sub(7) as usize);
+        let row = candidate_row(candidate, columns as usize);
         queue!(
             stderr,
-            Print(format!("{marker}  {command}\r\n")),
+            Print(format!("{row}\r\n")),
             SetAttribute(Attribute::Reset)
         )
         .map_err(|error| format!("could not render selector: {error}"))?;
@@ -217,6 +215,30 @@ fn render(state: &SelectorState) -> Result<(), String> {
     stderr
         .flush()
         .map_err(|error| format!("could not flush selector display: {error}"))
+}
+
+pub fn candidate_row(candidate: &RankedCandidate, width: usize) -> String {
+    let marker = if candidate.kind == CandidateKind::TypedInput {
+        "typed"
+    } else {
+        "hist "
+    };
+    let frequency = if candidate.kind == CandidateKind::History {
+        format!(" ×{}", candidate.frequency)
+    } else {
+        String::new()
+    };
+    let mut context = String::new();
+    if let Some(previous) = candidate.predecessors.first() {
+        context.push_str(&format!("  ← {} ({})", previous.command, previous.count));
+    }
+    if let Some(next) = candidate.successors.first() {
+        context.push_str(&format!("  → {} ({})", next.command, next.count));
+    }
+    truncate_for_terminal(
+        &format!("{marker}  {}{frequency}{context}", candidate.command),
+        width,
+    )
 }
 
 pub fn sanitize_for_terminal(value: &str) -> String {
@@ -262,6 +284,21 @@ mod tests {
         state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), &histories);
         assert_eq!(state.query(), "git");
         assert_eq!(state.highlighted(), 0);
+    }
+
+    #[test]
+    fn release_events_do_not_change_selector_state() {
+        let histories = histories();
+        let mut state = SelectorState::new(&histories, "git");
+        assert_eq!(
+            state.handle_key(
+                KeyEvent::new_with_kind(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Release),
+                &histories,
+            ),
+            SelectorAction::Continue
+        );
+        assert_eq!(state.highlighted(), 0);
+        assert_eq!(state.query(), "git");
     }
 
     #[test]
@@ -339,5 +376,19 @@ mod tests {
         let command = "a very long command with arguments";
         assert_eq!(truncate_for_terminal(command, 8), "a very l");
         assert_eq!(command, "a very long command with arguments");
+    }
+
+    #[test]
+    fn rendered_history_row_shows_frequency_and_adjacent_evidence() {
+        let histories = histories();
+        let candidate = rank_candidates(&histories, "git")
+            .into_iter()
+            .find(|candidate| candidate.command == "git status")
+            .unwrap();
+
+        let row = candidate_row(&candidate, 120);
+        assert!(row.contains("hist   git status ×2"));
+        assert!(row.contains("← cargo test (1)"));
+        assert!(row.contains("→ cargo test (1)"));
     }
 }
