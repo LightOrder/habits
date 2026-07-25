@@ -254,6 +254,27 @@ fn repeated_prior_paths_offer_each_depth_but_single_paths_do_not() {
 }
 
 #[test]
+fn sequence_uses_the_second_to_last_command_as_prior_context() {
+    let histories = vec![vec![
+        entry("context"),
+        entry("desired"),
+        entry("context"),
+        entry("desired"),
+        entry("habits select"),
+        entry("other"),
+        entry("habits select"),
+        entry("other"),
+        entry("habits select"),
+        entry("other"),
+        entry("context"),
+        entry("habits select"),
+    ]];
+    let grid = suggestion_grid(&histories, "");
+
+    assert_eq!(grid.lanes[3].suggestions[0].command, "desired");
+}
+
+#[test]
 fn sequence_backs_off_to_global_repeated_transitions_when_latest_context_has_no_path() {
     let histories = vec![vec![
         entry("alpha"),

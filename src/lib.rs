@@ -504,7 +504,8 @@ fn sequence_suggestions(
             .iter()
             .rev()
             .map(|entry| entry.command.trim())
-            .find(|command| !command.is_empty())
+            .filter(|command| !command.is_empty())
+            .nth(1)
     }) else {
         return Vec::new();
     };
