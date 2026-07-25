@@ -2,12 +2,19 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use habits::{HistoryFormat, batches, command_frequencies, load_history_file, repeated_sequences};
+use habits::{
+    HistoryFormat, batches, command_frequencies, conventional_history_paths, discover_histories,
+    load_history_file, repeated_sequences,
+    selector::{require_interactive_terminal, run_selector},
+    shell::zsh_init,
+};
 
 const USAGE: &str = "\
 Usage:
   habits inspect --format <FORMAT> --path <PATH> [--gap-seconds <SECONDS>] [--top <N>] [--json] [--show-commands]
-  habits paths [--json]
+  habits paths [--json] [--path <PATH> --format <FORMAT>]
+  habits select [--query <TEXT>]
+  habits shell-init zsh
   habits --help
   habits --version
 
@@ -16,6 +23,7 @@ Formats: bash-plain, bash-timestamped, zsh-plain, zsh-extended, powershell";
 fn main() -> ExitCode {
     match run(env::args().skip(1).collect()) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error) if error == SELECT_CANCELLED => ExitCode::from(1),
         Err(error) => {
             eprintln!("error: {error}");
             ExitCode::from(2)
@@ -46,7 +54,46 @@ fn run(arguments: Vec<String>) -> Result<(), String> {
         }
         "inspect" => inspect(&arguments[1..]),
         "paths" => paths(&arguments[1..]),
+        "select" => select(&arguments[1..]),
+        "shell-init" => shell_init(&arguments[1..]),
         unknown => usage_error(&format!("unknown command `{unknown}`")),
+    }
+}
+
+const SELECT_CANCELLED: &str = "\u{0}select-cancelled";
+
+fn select(arguments: &[String]) -> Result<(), String> {
+    let query = match arguments {
+        [] => "",
+        [option, value] if option == "--query" => value,
+        [option] if option == "--query" => return usage_error("missing value for --query"),
+        _ => return usage_error("select accepts only --query <TEXT>"),
+    };
+    require_interactive_terminal()?;
+    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    let paths = conventional_history_paths(Path::new(&home))?;
+    let histories: Vec<_> = discover_histories(&paths)
+        .into_iter()
+        .filter(|history| history.error.is_none())
+        .map(|history| history.entries)
+        .collect();
+    match run_selector(&histories, query)? {
+        Some(command) => {
+            println!("{command}");
+            Ok(())
+        }
+        None => Err(SELECT_CANCELLED.to_owned()),
+    }
+}
+
+fn shell_init(arguments: &[String]) -> Result<(), String> {
+    match arguments {
+        [shell] if shell == "zsh" => {
+            print!("{}", zsh_init());
+            Ok(())
+        }
+        [] => usage_error("shell-init requires zsh"),
+        _ => usage_error("shell-init supports only zsh"),
     }
 }
 
@@ -258,63 +305,154 @@ fn render_inspect_json(
     println!("]}}");
 }
 
-struct PathCandidate {
-    path: PathBuf,
-    format: &'static str,
+fn paths(arguments: &[String]) -> Result<(), String> {
+    let mut json = false;
+    let mut path = None;
+    let mut format = None;
+    let mut index = 0;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--json" => json = true,
+            "--path" => {
+                path = Some(PathBuf::from(option_value(
+                    arguments, &mut index, "--path",
+                )?))
+            }
+            "--format" => {
+                let value = option_value(arguments, &mut index, "--format")?;
+                format = Some(
+                    parse_format(value)
+                        .ok_or_else(|| format!("invalid format `{value}`\n\n{USAGE}"))?,
+                );
+            }
+            option => return usage_error(&format!("unknown paths option `{option}`")),
+        }
+        index += 1;
+    }
+
+    if path.is_some() != format.is_some() {
+        return usage_error("--path and --format must be supplied together");
+    }
+
+    if let (Some(path), Some(format)) = (path, format) {
+        let exists = path.is_file();
+        let entries = if exists {
+            Some(load_history_file(&path, format).map_err(|_| {
+                format!(
+                    "could not read or parse requested history path `{}`",
+                    path.display()
+                )
+            })?)
+        } else {
+            None
+        };
+        render_path_report(
+            json,
+            &[(
+                format.source(),
+                path,
+                exists,
+                format,
+                "manual override",
+                entries.as_ref().map_or(0, Vec::len),
+                None,
+            )],
+        );
+        return Ok(());
+    }
+
+    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
+    let discovered = discover_histories(&conventional_history_paths(Path::new(&home))?);
+    let rows: Vec<_> = discovered
+        .into_iter()
+        .map(|history| {
+            (
+                history.source,
+                history.path,
+                history.exists,
+                history.format,
+                history.format_selection,
+                history.entry_count,
+                history.error,
+            )
+        })
+        .collect();
+    render_path_report(json, &rows);
+    Ok(())
 }
 
-fn paths(arguments: &[String]) -> Result<(), String> {
-    let json = match arguments {
-        [] => false,
-        [argument] if argument == "--json" => true,
-        _ => return usage_error("paths accepts only --json"),
-    };
-    let home = env::var_os("HOME").ok_or_else(|| "HOME is not set".to_owned())?;
-    let home = PathBuf::from(home);
-    if !home.is_absolute() {
-        return Err("HOME must be an absolute path".to_owned());
-    }
-    let candidates = [
-        PathCandidate {
-            path: home.join(".zsh_history"),
-            format: "zsh-plain",
-        },
-        PathCandidate {
-            path: home.join(".bash_history"),
-            format: "bash-plain",
-        },
-        PathCandidate {
-            path: home.join(".local/share/powershell/PSReadLine/ConsoleHost_history.txt"),
-            format: "powershell",
-        },
-    ];
-
+#[allow(clippy::type_complexity)]
+fn render_path_report(
+    json: bool,
+    rows: &[(
+        habits::HistorySource,
+        PathBuf,
+        bool,
+        HistoryFormat,
+        &'static str,
+        usize,
+        Option<String>,
+    )],
+) {
     if json {
         print!("{{\"candidates\":[");
-        for (index, candidate) in candidates.iter().enumerate() {
+        for (index, (source, path, exists, format, selection, count, error)) in
+            rows.iter().enumerate()
+        {
             if index != 0 {
                 print!(",");
             }
             print!(
-                "{{\"path\":{},\"exists\":{},\"format\":{}}}",
-                json_path(&candidate.path),
-                candidate.path.metadata().is_ok(),
-                json_string(candidate.format)
+                "{{\"source\":{},\"path\":{},\"exists\":{},\"format\":{},\"format_selection\":{},\"entry_count\":{}",
+                json_string(source_name(*source)),
+                json_path(path),
+                exists,
+                json_string(format_name(*format)),
+                json_string(selection),
+                count
             );
+            if let Some(error) = error {
+                print!(",\"error\":{}", json_string(error));
+            }
+            print!("}}");
         }
         println!("]}}");
     } else {
-        println!("Conventional history paths (suggested formats, not detected):");
-        for candidate in candidates {
+        println!("History discovery:");
+        for (source, path, exists, format, selection, count, error) in rows {
             println!(
-                "{} | exists: {} | format: {}",
-                candidate.path.display(),
-                candidate.path.metadata().is_ok(),
-                candidate.format
+                "{} | {} | exists: {} | format: {} ({}) | entries: {}{}",
+                source_name(*source),
+                path.display(),
+                exists,
+                format_name(*format),
+                selection,
+                count,
+                error
+                    .as_ref()
+                    .map(|message| format!(" | error: {message}"))
+                    .unwrap_or_default()
             );
         }
     }
-    Ok(())
+}
+
+fn source_name(source: habits::HistorySource) -> &'static str {
+    match source {
+        habits::HistorySource::Bash => "bash",
+        habits::HistorySource::Zsh => "zsh",
+        habits::HistorySource::PowerShell => "powershell",
+    }
+}
+
+fn format_name(format: HistoryFormat) -> &'static str {
+    match format {
+        HistoryFormat::BashPlain => "bash-plain",
+        HistoryFormat::BashTimestamped => "bash-timestamped",
+        HistoryFormat::ZshPlain => "zsh-plain",
+        HistoryFormat::ZshExtended => "zsh-extended",
+        HistoryFormat::PowerShell => "powershell",
+    }
 }
 
 fn json_path(path: &Path) -> String {

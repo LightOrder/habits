@@ -214,9 +214,37 @@ fn paths_json_reports_only_known_candidates_without_reading_them() {
         assert_eq!(candidate["path"].string(), path.to_str().unwrap());
         assert_eq!(candidate["exists"].boolean(), exists);
         assert_eq!(candidate["format"].string(), format);
+        assert!(candidate.contains_key("source"));
+        assert!(candidate.contains_key("format_selection"));
+        assert!(candidate.contains_key("entry_count"));
     }
     assert!(!report.contains("HABITS_PRIVATE_SENTINEL_7f93"));
-    assert!(!report.to_ascii_lowercase().contains("detected"));
+}
+
+#[test]
+fn paths_manual_override_replaces_automatic_discovery() {
+    let fixture = Fixture::new();
+    let path = fixture.write("chosen-history", b"#100\ncargo test\n");
+    let output = run(fixture.command().args([
+        "paths",
+        "--path",
+        path.to_str().unwrap(),
+        "--format",
+        "bash-timestamped",
+        "--json",
+    ]));
+
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report = stdout(&output);
+    let parsed = JsonParser::parse(&report).expect("paths output should be valid JSON");
+    let candidates = parsed.object()["candidates"].array();
+    assert_eq!(candidates.len(), 1);
+    let candidate = candidates[0].object();
+    assert_eq!(candidate["path"].string(), path.to_str().unwrap());
+    assert_eq!(candidate["format"].string(), "bash-timestamped");
+    assert_eq!(candidate["format_selection"].string(), "manual override");
+    assert_eq!(candidate["entry_count"].number(), 1);
+    assert!(!report.contains("cargo test"));
 }
 
 #[test]

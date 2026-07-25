@@ -1,107 +1,55 @@
 # Habits
 
-**Habits is a local memory for terminal work.**
+Habits is a local, deterministic visual reverse-history picker for Zsh, Bash,
+and PowerShell/PSReadLine histories.
 
-The first release is deliberately narrow: load shell histories, preserve what the sources actually know, and derive inspectable statistics for a future improved reverse search and macro-suggestion workflow.
+## Install
 
-## v0: safe local inspection CLI
-
-- Parse explicitly selected Bash plain/timestamped, Zsh plain/extended, and PowerShell / PSReadLine history formats.
-- Preserve source, source order, raw command text (trimmed only at edges), and optional timestamps.
-- Count exact command frequency without rewriting shell syntax.
-- Build work batches from contiguous timestamped commands only.
-- Find repeated contiguous command sequences inside a batch.
-- Inspect one explicitly selected history file without disclosing commands by default.
-- Report conventional history paths using exact metadata checks without reading their contents.
-
-### Explicit non-goals
-
-No shell hook, command recorder, database, fuzzy picker, fzf integration, macro execution, LLM/embedding layer, cloud sync, or background daemon.
-
-## Data honesty
-
-History formats vary. Habits requires the caller to select the exact format rather than guessing whether a legal command line is actually metadata. Zsh extended history and timestamp-enabled Bash history can record Unix timestamps. Plain Zsh/Bash and standard PSReadLine history usually cannot. Habits never infers timestamps from line order; untimestamped commands participate in frequency analysis but form hard boundaries for time-based batches.
-
-## Sequence ranking
-
-The first heuristic is transparent:
-
-```text
-rank = occurrences × sequence_length²
-```
-
-That makes a repeated three-command workflow more interesting than a single popular command. This is a candidate-generation utility, not an automatic macro creator; a future UI must ask before a candidate becomes a named command.
-
-## Development
-
-```bash
-cargo test
-cargo check --all-targets
+```sh
 cargo build --release
+install target/release/habits ~/.local/bin/habits
 ```
 
-The release binary is `target/release/habits`.
+## Use
 
-## CLI usage
+Discover the three conventional history files, parser choices, and entry
+counts:
 
-Inspect a fixture or other explicitly selected file:
-
-```bash
-mkdir -p ./fixtures
-printf ': 1700000000:0;echo example\n' > ./fixtures/example.zsh_history
-target/release/habits inspect \
-  --format zsh-extended \
-  --path ./fixtures/example.zsh_history
+```sh
+habits paths
+habits paths --json
+habits paths --path ./history --format zsh-extended
 ```
 
-Supported formats are exactly `bash-plain`, `bash-timestamped`, `zsh-plain`,
-`zsh-extended`, and `powershell`. The defaults are a 300-second batch gap and
-10 rows; override them with `--gap-seconds` and `--top`. Add `--json` for a
-deterministic aggregate report.
+Open the interactive picker with an optional initial command:
 
-By default, reports contain counts and ranks only. Commands, arguments, paths
-from history content, and repeated command sequences are withheld. The
-`--show-commands` flag is an explicit opt-in that prints a warning to stderr
-before raw commands are emitted:
-
-```bash
-target/release/habits inspect \
-  --format zsh-extended \
-  --path ./fixtures/example.zsh_history \
-  --show-commands
+```sh
+habits select --query "git st"
 ```
 
-List the three conventional candidate paths without reading their contents:
+The list narrows as you type. Up and Down move the highlight without changing
+the typed command. Enter confirms the highlighted history or typed-input row;
+Escape cancels.
 
-```bash
-target/release/habits paths
-target/release/habits paths --json
+Enable the optional Zsh Ctrl-R widget by explicitly adding this sourceable
+output to your shell setup:
+
+```sh
+habits shell-init zsh >> ~/.zshrc
 ```
 
-These are suggested format/path pairs, not detected formats. `paths` checks
-only whether each exact path exists. `inspect` reads only the path supplied by
-the caller. Neither command writes history, shell configuration, caches, or
-network data.
+`shell-init` only prints setup text; Habits never edits `.zshrc`. The widget
+leaves the current buffer unchanged on cancellation, errors, or confirmation
+of the typed-input row.
 
-For help and version information:
+## Privacy
 
-```bash
-target/release/habits --help
-target/release/habits --version
-```
+History stays local. Automatic discovery reads only the conventional Zsh,
+Bash, and PSReadLine files under the home directory; a manual path replaces
+those targets. Default, help, discovery, and error output never contains
+commands. Raw commands appear in an explicitly invoked interactive selector or
+through the legacy diagnostic `inspect --show-commands` opt-in, which emits a
+warning. Habits does not log or persist commands, execute selections, call a
+network service, or write shell configuration.
 
-### Explicit local audit harness
-
-The checked-in `audit` example remains a diagnostic library harness. The
-first-class interface is now `habits inspect`.
-
-### Continuing non-goals
-
-CWD and exit-code capture, timestamp configuration writing, shell hooks,
-retrieval UI, models, database/indexing, and macro creation or execution remain
-deferred. Habits performs no automatic directory scanning, format detection,
-remote calls, or shell configuration changes.
-
-## Roadmap
-
-See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+See [the roadmap](docs/ROADMAP.md) for deliberately excluded work.
